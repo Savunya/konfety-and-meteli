@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>🍬 700 конфет — живой гироскоп</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { width:100vw; height:100vh; overflow:hidden; background:#fef9f4; }
+        canvas { display:block; position:fixed; top:0; left:0; width:100%; height:100%; }
+    </style>
+</head>
+<body>
+<canvas id="candyCanvas"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+(function() {
+    const canvas = document.getElementById('candyCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // ==================== НАСТРОЙКИ ====================
+    const TOTAL_CANDIES = 700;
+    const DURATION_MS = 5 * 60 * 1000;                 // 5 минут
+    const CANDY_IMAGE_URLS = [
+        'candy1.png', 'candy2.png', 'candy3.png',
+        'candy4.png', 'candy5.png', 'candy6.png',
+        'candy7.png', 'candy8.png', 'candy9.png',
+        'candy10.png', 'candy11.png', 'candy12.png',
+        'candy13.png', 'candy14.png', 'candy15.png',
+        'candy16.png', 'candy17.png', 'candy18.png'
+    ];
+
+    const CANDY_SCALE = [
+        1.05, 1.05, 1.05, 0.85, 1.05, 1.05, 1.05, 1.05, 1.05,
+        1.05, 1.05, 1.05, 1.05, 1.05, 0.85, 1.05, 1.05, 1.05
+    ];
+
+    const STORAGE_KEY = 'candy_gyro_v1';
+    // ==================================================
+
+    let RADIUS = 12;
+    let loadedImages = [];    // { img, radiusInPixels, offsetX, offsetY, scale }
+    let candies = [];
+    let totalSpawned = 0;
+    let startTime = null;
+    let animationId = null;
+    let lastTime = 0;
+
+    const engine = Matter.Engine.create({
+        enableSleeping: true,
+        positionIterations: 14,
+        velocityIterations: 10,
+        timing: { timeScale: 1 }
+    });
+    const world = engine.world;
+
+    // Базовая гравитация (по умолчанию вниз)
+    const BASE_GRAVITY = 1.0; // масштаб
+
+    // Состояние гироскопа
+    let useGyro = false;
+    let gyroActive = false;
+    let currentGravity = { x: 0, y: BASE_GRAVITY };
+
+    let ground, leftWall, rightWall;
+    let mouse, mouseConstraint;
+
+    function calcRadius() {
+        const w = canvas.width, h = canvas.height;
+        const minDim = Math.min(w, h);
+        return Math.max(6, Math.min(40, Math.floor(minDim / 24)));
+    }
+
+    function createBoundaries() {
+        if (ground) Matter.World.remove(world, ground);
+        if (leftWall) Matter.World.remove(world, leftWall);
+        if (rightWall) Matter.World.remove(world, rightWall);
+        const w = canvas.width, h = canvas.height;
+        ground = Matter.Bodies.rectangle(w/2, h + 50, w, 100, { isStatic: true, friction: 0.8 });
+        leftWall = Matter.Bodies.rectangle(-50, h/2, 100, h, { isStatic: true });
+        rightWall = Matter.Bodies.rectangle(w + 50, h/2, 100, h, { isStatic: true });
+        Matter.World.add(world, [ground, leftWall, rightWall]);
+    }
+
+    function createMouse() {
+        if (mouseConstraint) Matter.World.remove(world, mouseConstraint);
+        mouse = Matter.Mouse.create(canvas);
+        mouseConstraint = Matter.MouseConstraint.create(engine, {
+            mouse: mouse,
+            constraint: { stiffness: 0.2, render: { visible: false } }
+        });
+        Matter.World.add(world, mouseConstraint);
+    }
+
+    // ---- Гироскоп / акселерометр ----
+    function setupGyro() {
+        // Проверяем поддержку DeviceOrientationEvent
+        if (window.DeviceOrientationEvent) {
+            // Для iOS 13+ требуется запрос разрешения
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                // Показываем кнопку или автоматически запрашиваем при первом касании?
+                // Сделаем запрос по первому клику/касанию на канвасе
+                const requestBtn = () => {
+                    DeviceOrientationEvent.requestPermission()
+                        .then(permissionState => {
+                            if (permissionState === 'granted') {
+                                enableGyroListener();
+                            } else {
+                                console.log('Разрешение на гироскоп не получено');
+                            }
+                        })
+                        .catch(console.error);
+                };
+                canvas.addEventListener('click', requestBtn, { once: true });
+                canvas.addEventListener('touchstart', requestBtn, { once: true });
+                // Также попробуем запросить сразу (некоторые браузеры требуют жест)
+                setTimeout(() => {
+                    if (!gyroActive && document.hasFocus()) {
+                        // Показываем подсказку? Пока просто ждем касания.
+                    }
+                }, 500);
+            } else {
+                enableGyroListener();
+            }
+        } else {
+            console.log('Гироскоп не поддерживается');
+        }
+    }
+
+    function enableGyroListener() {
+        window.addEventListener('deviceorientation', handleOrientation);
+        gyroActive = true;
+        useGyro = true;
+        console.log('Гироскоп активирован');
+    }
+
+    function handleOrientation(event) {
+        if (!event.beta || !event.gamma) return; // нет данных
+
+        // beta: наклон вперед-назад (-180...180), 0 = вертикально
+        // gamma: наклон влево-вправо (-90...90), 0 = ровно
+        let beta = event.beta;   // перед-зад
+        let gamma = event.gamma; // лево-право
+
+        // Нормализуем углы: преобразуем в вектор направления "вниз" относительно экрана
+        // Упрощённая модель: считаем, что экран вертикальный (портрет)
+        // Гравитация в координатах экрана: x ~ sin(gamma), y ~ sin(beta) при малых углах
+        // Чтобы получить стабильное поведение, используем проекцию вектора g
+        // g = 1 в сторону земли. В системе координат телефона (ось X вправо, Y вниз по экрану, Z в экран)
+        // Вектор гравитации в системе телефона:
+        // gx = -sin(gamma) ?  нет, формула сложнее.
+        // Используем упрощение: beta=0, gamma=0 -> гравитация строго вниз (0,1)
+        // При gamma > 0 (наклон вправо) гравитация смещается влево (отрицательный x)
+        // При beta > 0 (наклон верхом от себя) гравитация смещается вверх (отрицательный y)
+
+        const degToRad = Math.PI / 180;
+        const gx = Math.sin(gamma * degToRad);
+        const gy = Math.sin(beta * degToRad);
+
+        // Нормализуем длину до BASE_GRAVITY
+        const len = Math.sqrt(gx*gx + gy*gy) || 1;
+        currentGravity = {
+            x: (gx / len) * BASE_GRAVITY,
+            y: (gy / len) * BASE_GRAVITY
+        };
+
+        // Применяем к движку
+        engine.gravity.x = currentGravity.x;
+        engine.gravity.y = currentGravity.y;
+    }
+
+    // ---- Анализ изображения ----
+    function analyzeImageSafely(img) {
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        if (w === 0 || h === 0) {
+            return { radiusInPixels: RADIUS, offsetX: 0, offsetY: 0 };
+        }
+        try {
+            const offscreen = document.createElement('canvas');
+            offscreen.width = w;
+            offscreen.height = h;
+            const offCtx = offscreen.getContext('2d');
+            offCtx.drawImage(img, 0, 0);
+            const imageData = offCtx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+
+            let minX = w, minY = h, maxX = 0, maxY = 0;
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const alpha = data[(y * w + x) * 4 + 3];
+                    if (alpha > 10) {
+                        if (x < minX) minX = x;
+                        if (y < minY) minY = y;
+                        if (x > maxX) maxX = x;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+            }
+            if (minX > maxX || minY > maxY) {
+                minX = 0; minY = 0; maxX = w - 1; maxY = h - 1;
+            }
+            const bboxWidth = maxX - minX + 1;
+            const bboxHeight = maxY - minY + 1;
+            const radiusInPixels = Math.max(bboxWidth, bboxHeight) / 2;
+            const bboxCenterX = (minX + maxX) / 2;
+            const bboxCenterY = (minY + maxY) / 2;
+            const offsetX = w/2 - bboxCenterX;
+            const offsetY = h/2 - bboxCenterY;
+            return { radiusInPixels, offsetX, offsetY };
+        } catch (e) {
+            console.warn('Не удалось проанализировать пиксели', img.src);
+            return { radiusInPixels: Math.max(w, h) / 2, offsetX: 0, offsetY: 0 };
+        }
+    }
+
+    async function loadImages(urls, scales) {
+        if (!urls?.length) return [];
+        const proms = urls.map((url, index) => new Promise(resolve => {
+            const img = new Image();
+            img.src = url;
+            img.onload = () => {
+                const analysis = analyzeImageSafely(img);
+                resolve({ img, ...analysis, scale: scales[index] || 1.0 });
+            };
+            img.onerror = () => resolve(null);
+        }));
+        return (await Promise.all(proms)).filter(i => i);
+    }
+
+    const BG_CANDIES_COUNT = 30;
+    let bgCandies = [];
+
+    function createBgCandy(yPos) {
+        const r = RADIUS * 1.2;
+        return {
+            x: Math.random() * canvas.width,
+            y: yPos ?? (Math.random() * (canvas.height + 2*r) - r),
+            vy: 6 + Math.random() * 12,
+            radius: r,
+            image: loadedImages.length ? loadedImages[Math.floor(Math.random() * loadedImages.length)].img : null,
+            color: `hsl(${Math.random()*360},65%,80%)`
+        };
+    }
+
+    function initBgCandies() {
+        bgCandies = [];
+        for (let i = 0; i < BG_CANDIES_COUNT; i++) {
+            const y = Math.random() * (canvas.height + 2 * RADIUS) - RADIUS;
+            bgCandies.push(createBgCandy(y));
+        }
+    }
+
+    function spawnCandy() {
+        const r = RADIUS;
+        const src = loadedImages.length ? loadedImages[Math.floor(Math.random() * loadedImages.length)] : null;
+        const img = src?.img || null;
+        const radiusInPixels = src?.radiusInPixels || r;
+        const offsetX = src?.offsetX || 0;
+        const offsetY = src?.offsetY || 0;
+        const scaleOverride = src?.scale || 1.0;
+
+        const body = Matter.Bodies.circle(0, 0, r, {
+            restitution: 0.35, friction: 0.6, frictionAir: 0.05, density: 0.005
+        });
+
+        const x = r + Math.random() * (canvas.width - 2 * r);
+        const y = -r - Math.random() * 180;
+        Matter.Body.setPosition(body, { x, y });
+
+        body.renderData = {
+            image: img,
+            color: `hsl(${Math.random()*360},70%,75%)`,
+            radiusInPixels,
+            offsetX,
+            offsetY,
+            scaleOverride
+        };
+
+        Matter.World.add(world, body);
+        candies.push(body);
+        totalSpawned++;
+        return body;
+    }
+
+    function catchUpToExpected(expectedTotal) {
+        while (totalSpawned < expectedTotal && totalSpawned < TOTAL_CANDIES) {
+            spawnCandy();
+        }
+    }
+
+    function rebuildWorld() {
+        for (const b of candies) Matter.World.remove(world, b);
+        candies = [];
+        const savedSpawned = totalSpawned;
+        totalSpawned = 0;
+        for (let i = 0; i < savedSpawned; i++) spawnCandy();
+        initBgCandies();
+    }
+
+    function drawCandy(ctx, body, alpha = 1) {
+        const rd = body.renderData;
+        if (!rd) return;
+        const { x, y } = body.position;
+        const angle = body.angle;
+        const img = rd.image;
+        const color = rd.color;
+        const radiusInPixels = rd.radiusInPixels || RADIUS;
+        const offX = rd.offsetX || 0;
+        const offY = rd.offsetY || 0;
+        const r = RADIUS;
+        const scaleOverride = rd.scaleOverride || 1.0;
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = 'rgba(0,0,0,0.08)';
+        ctx.shadowBlur = 3;
+        ctx.shadowOffsetY = 1;
+
+        if (img?.complete && img.naturalWidth > 0) {
+            const scale = r / radiusInPixels;
+            const baseDrawWidth = img.naturalWidth * scale;
+            const baseDrawHeight = img.naturalHeight * scale;
+            const drawOffsetX = offX * scale;
+            const drawOffsetY = offY * scale;
+
+            const finalWidth = baseDrawWidth * scaleOverride;
+            const finalHeight = baseDrawHeight * scaleOverride;
+
+            ctx.drawImage(img,
+                -finalWidth/2 + drawOffsetX,
+                -finalHeight/2 + drawOffsetY,
+                finalWidth, finalHeight);
+        } else {
+            const radius = r * scaleOverride;
+            const grad = ctx.createRadialGradient(-radius*0.3, -radius*0.3, radius*0.1, 0, 0, radius);
+            grad.addColorStop(0, '#fff');
+            grad.addColorStop(0.4, color);
+            grad.addColorStop(1, shade(color, -30));
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI*2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+            ctx.lineWidth = radius * 0.2;
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function shade(hex, p) {
+        if (hex.startsWith('hsl')) return '#f0c0d0';
+        const num = parseInt(hex.slice(1), 16);
+        const r = Math.min(255, Math.max(0, (num >> 16) + p));
+        const g = Math.min(255, Math.max(0, ((num >> 8) & 0xFF) + p));
+        const b = Math.min(255, Math.max(0, (num & 0xFF) + p));
+        return `rgb(${r},${g},${b})`;
+    }
+
+    function drawScene() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        bgGrad.addColorStop(0, '#fef5f9');
+        bgGrad.addColorStop(0.7, '#f0f6ff');
+        bgGrad.addColorStop(1, '#e6f3e8');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (const bg of bgCandies) {
+            ctx.save();
+            ctx.translate(bg.x, bg.y);
+            ctx.globalAlpha = 0.25;
+            if (bg.image) {
+                const s = bg.radius * 2.4;
+                ctx.drawImage(bg.image, -s/2, -s/2, s, s);
+            } else {
+                ctx.beginPath();
+                ctx.arc(0, 0, bg.radius, 0, Math.PI*2);
+                ctx.fillStyle = bg.color;
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        const sorted = [...candies].sort((a, b) => a.position.y - b.position.y);
+        for (const body of sorted) {
+            drawCandy(ctx, body, 1);
+        }
+    }
+
+    function gameLoop(timestamp) {
+        if (!animationId) return;
+        const dtMs = Math.min(50, timestamp - (lastTime || timestamp));
+        lastTime = timestamp;
+        const dtSec = dtMs / 1000;
+
+        if (totalSpawned < TOTAL_CANDIES && startTime) {
+            const elapsed = Date.now() - startTime;
+            const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsed / (DURATION_MS / TOTAL_CANDIES)));
+            while (totalSpawned < expectedTotal) spawnCandy();
+        }
+
+        Matter.Engine.update(engine, dtMs);
+
+        for (const bg of bgCandies) {
+            bg.y += bg.vy * dtSec;
+            if (bg.y - bg.radius > canvas.height) {
+                bg.y = -bg.radius - Math.random() * 50;
+                bg.x = Math.random() * canvas.width;
+            }
+        }
+
+        drawScene();
+        animationId = requestAnimationFrame(gameLoop);
+    }
+
+    function onResize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const newRadius = calcRadius();
+        if (newRadius !== RADIUS) {
+            RADIUS = newRadius;
+            createBoundaries();
+            rebuildWorld();
+        } else {
+            createBoundaries();
+            for (const body of candies) {
+                Matter.Body.setPosition(body, {
+                    x: Math.min(Math.max(body.position.x, RADIUS), canvas.width - RADIUS),
+                    y: Math.min(Math.max(body.position.y, RADIUS), canvas.height - RADIUS)
+                });
+            }
+            initBgCandies();
+        }
+        createMouse();
+    }
+    window.addEventListener('resize', onResize);
+
+    async function init() {
+        try {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            RADIUS = calcRadius();
+            loadedImages = await loadImages(CANDY_IMAGE_URLS, CANDY_SCALE);
+            createBoundaries();
+            createMouse();
+            setupGyro(); // ← включаем поддержку гироскопа
+
+            const savedStart = localStorage.getItem(STORAGE_KEY);
+            if (savedStart) {
+                startTime = parseInt(savedStart);
+            } else {
+                startTime = Date.now();
+                localStorage.setItem(STORAGE_KEY, startTime.toString());
+            }
+
+            for (const b of candies) Matter.World.remove(world, b);
+            candies = [];
+            totalSpawned = 0;
+
+            const elapsed = Date.now() - startTime;
+            const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsed / (DURATION_MS / TOTAL_CANDIES)));
+            catchUpToExpected(expectedTotal);
+
+            initBgCandies();
+            lastTime = 0;
+            if (animationId) cancelAnimationFrame(animationId);
+            animationId = requestAnimationFrame(gameLoop);
+        } catch (e) {
+            console.error('Ошибка инициализации:', e);
+            RADIUS = calcRadius() || 12;
+            createBoundaries();
+            initBgCandies();
+            lastTime = 0;
+            animationId = requestAnimationFrame(gameLoop);
+        }
+    }
+
+    init();
+})();
+</script>
+</body>
+</html>
