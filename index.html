@@ -10,7 +10,10 @@
             width:100vw; height:100vh; overflow:hidden;
             background:#fef9f4; font-family: 'Segoe UI', system-ui, sans-serif;
         }
-        canvas { display:block; position:fixed; top:0; left:0; width:100%; height:100%; }
+        canvas { 
+            display:block; position:fixed; top:0; left:0; width:100%; height:100%; 
+            z-index: 0;
+        }
         .gyro-btn {
             position:fixed; bottom:30px; left:50%; transform:translateX(-50%);
             background:rgba(255,255,255,0.8); backdrop-filter:blur(10px);
@@ -21,11 +24,30 @@
             display:none;
         }
         .gyro-btn:active { transform:translateX(-50%) scale(0.96); }
+
+        #customCursor {
+            position: fixed;
+            pointer-events: none;
+            z-index: 9999;
+            transform: translate(-50%, -50%);
+            display: none;
+            width: 70px;
+            height: auto;
+            will-change: left, top;
+        }
+
+        body.custom-cursor-active {
+            cursor: none;
+        }
+        body.custom-cursor-active canvas {
+            cursor: none;
+        }
     </style>
 </head>
 <body>
     <canvas id="candyCanvas"></canvas>
     <button id="gyroButton" class="gyro-btn">📳 включить движение</button>
+    <img id="customCursor" src="hand1.png" alt="курсор">
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script>
@@ -33,14 +55,15 @@
         const canvas = document.getElementById('candyCanvas');
         const ctx = canvas.getContext('2d');
         const gyroBtn = document.getElementById('gyroButton');
+        const cursorImg = document.getElementById('customCursor');
 
-        // ==================== ГЛОБАЛЬНЫЙ ТАЙМЕР ====================
+        // ==================== ГЛОБАЛЬНЫЙ ТАЙМЕР НА НЕДЕЛЮ (от сегодня) ====================
         const TOTAL_CANDIES = 500;
-        // Начало текущего дня по UTC
         const now = new Date();
+        // Начало сегодняшнего дня по UTC – единая точка отсчёта для всех
         const START_DATE = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-        const DURATION_MS = 24 * 60 * 60 * 1000; // 24 часа
-        const SPAWN_INTERVAL = DURATION_MS / TOTAL_CANDIES; // ≈ 172.8 сек
+        const DURATION_MS = 7 * 24 * 60 * 60 * 1000; // ровно 7 дней
+        const SPAWN_INTERVAL = DURATION_MS / TOTAL_CANDIES; // ~1209.6 сек
 
         const CANDY_IMAGE_URLS = [
             'candy1.png', 'candy2.png', 'candy3.png',
@@ -59,7 +82,7 @@
         let loadedImages = [];
         let candies = [];
         let totalSpawned = 0;
-        let nextSpawnDue = START_DATE.getTime();
+        let nextSpawnDue = 0;
         let animationId = null;
         let lastTime = 0;
 
@@ -78,31 +101,123 @@
         let ground, leftWall, rightWall;
         let mouse, mouseConstraint;
 
-        function calcRadius() {
-            const w = canvas.width, h = canvas.height;
-            const minDim = Math.min(w, h);
-            return Math.max(6, Math.min(40, Math.floor(minDim / 24)));
+        // ---- Кастомный курсор ----
+        const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        let customCursorEnabled = false;
+
+        function enableCustomCursor() {
+            if (isTouchDevice) return;
+            customCursorEnabled = true;
+            document.body.classList.add('custom-cursor-active');
+            cursorImg.style.display = 'block';
+            cursorImg.src = 'hand1.png';
         }
 
-        function createBoundaries() {
-            if (ground) Matter.World.remove(world, ground);
-            if (leftWall) Matter.World.remove(world, leftWall);
-            if (rightWall) Matter.World.remove(world, rightWall);
-            const w = canvas.width, h = canvas.height;
-            ground = Matter.Bodies.rectangle(w/2, h + 50, w, 100, { isStatic: true, friction: 0.8 });
-            leftWall = Matter.Bodies.rectangle(-50, h/2, 100, h, { isStatic: true });
-            rightWall = Matter.Bodies.rectangle(w + 50, h/2, 100, h, { isStatic: true });
-            Matter.World.add(world, [ground, leftWall, rightWall]);
+        function disableCustomCursor() {
+            customCursorEnabled = false;
+            document.body.classList.remove('custom-cursor-active');
+            cursorImg.style.display = 'none';
         }
 
-        function createMouse() {
-            if (mouseConstraint) Matter.World.remove(world, mouseConstraint);
-            mouse = Matter.Mouse.create(canvas);
-            mouseConstraint = Matter.MouseConstraint.create(engine, {
-                mouse: mouse,
-                constraint: { stiffness: 0.2, render: { visible: false } }
+        function updateCursorPosition(e) {
+            if (!customCursorEnabled) return;
+            cursorImg.style.left = e.clientX + 'px';
+            cursorImg.style.top = e.clientY + 'px';
+        }
+
+        function onMouseDown(e) {
+            if (!customCursorEnabled) return;
+            const mousePos = { x: e.clientX, y: e.clientY };
+            const bodiesUnder = Matter.Query.point(candies, mousePos);
+            if (bodiesUnder.length > 0) {
+                cursorImg.src = 'hand2.png';
+            }
+        }
+
+        function onMouseUp(e) {
+            if (!customCursorEnabled) return;
+            cursorImg.src = 'hand1.png';
+        }
+
+        function setupCustomCursor() {
+            if (isTouchDevice) {
+                disableCustomCursor();
+                return;
+            }
+            enableCustomCursor();
+            document.addEventListener('mousemove', updateCursorPosition);
+            document.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('mouseup', onMouseUp);
+        }
+
+        // --------------- ЗВУК ---------------
+        let audioCtx = null;
+        let soundBuffer = null;
+        let lastSoundTime = 0;
+        const SOUND_MIN_INTERVAL = 0.08;
+        const SOUND_PROBABILITY = 0.5;
+        const MIN_COLLISION_SPEED = 0.5;
+
+        async function loadSound(url) {
+            try {
+                const response = await fetch(url);
+                const arrayBuffer = await response.arrayBuffer();
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                soundBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                console.log('Звук загружен');
+            } catch (e) {
+                console.warn('Не удалось загрузить звук:', url, e);
+            }
+        }
+
+        function playSoundWithPitch(pitchMultiplier = 1.0, volume = 0.15) {
+            if (!audioCtx || !soundBuffer) return;
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            const source = audioCtx.createBufferSource();
+            source.buffer = soundBuffer;
+            source.playbackRate.value = pitchMultiplier;
+            const gain = audioCtx.createGain();
+            gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+            source.connect(gain);
+            gain.connect(audioCtx.destination);
+            source.start();
+            source.onended = () => source.disconnect();
+        }
+
+        function tryPlayCollisionSound(pitchRange, bodyA, bodyB) {
+            const relVelX = bodyA.velocity.x - bodyB.velocity.x;
+            const relVelY = bodyA.velocity.y - bodyB.velocity.y;
+            const relSpeed = Math.sqrt(relVelX * relVelX + relVelY * relVelY);
+            if (relSpeed < MIN_COLLISION_SPEED) return;
+
+            const now = performance.now();
+            if (now - lastSoundTime < SOUND_MIN_INTERVAL * 1000) return;
+            if (Math.random() > SOUND_PROBABILITY) return;
+            lastSoundTime = now;
+
+            const pitch = pitchRange[0] + Math.random() * (pitchRange[1] - pitchRange[0]);
+            playSoundWithPitch(pitch, 0.15);
+        }
+
+        function setupCollisionEvents() {
+            Matter.Events.on(engine, 'collisionStart', (event) => {
+                for (const pair of event.pairs) {
+                    const bodyA = pair.bodyA;
+                    const bodyB = pair.bodyB;
+                    if (bodyA.isStatic || bodyB.isStatic) {
+                        if (bodyA === ground || bodyB === ground ||
+                            bodyA === leftWall || bodyB === leftWall ||
+                            bodyA === rightWall || bodyB === rightWall) {
+                            tryPlayCollisionSound([0.8, 0.95], bodyA, bodyB);
+                        }
+                    } else {
+                        tryPlayCollisionSound([0.9, 1.1], bodyA, bodyB);
+                    }
+                    break;
+                }
             });
-            Matter.World.add(world, mouseConstraint);
         }
 
         // --------------- ГИРОСКОП ------------------
@@ -221,26 +336,29 @@
             const y = -r - Math.random() * 200;
             Matter.Body.setPosition(body, { x, y });
 
-            body.renderData = { image: img, color: `hsl(${Math.random()*360},70%,75%)`, radiusInPixels: radPx, offsetX: offX, offsetY: offY, scaleOverride };
+            body.renderData = {
+                image: img, color: `hsl(${Math.random()*360},70%,75%)`,
+                radiusInPixels: radPx, offsetX: offX, offsetY: offY, scaleOverride
+            };
             Matter.World.add(world, body);
             candies.push(body);
             totalSpawned++;
         }
 
-        // Быстрое создание пропущенных конфет (кучка)
-        function fastForwardSpawns(targetCount) {
+        function rapidInitialDrop(targetCount) {
             if (totalSpawned >= targetCount) return;
-            const batchSize = 5;
-            const interval = 60;
-            const step = () => {
-                if (totalSpawned >= targetCount) return;
+            const batchSize = 20;
+            const interval = 150;
+            const dropBatch = () => {
                 const toSpawn = Math.min(batchSize, targetCount - totalSpawned);
-                for (let i = 0; i < toSpawn; i++) spawnCandy();
+                for (let i = 0; i < toSpawn; i++) {
+                    spawnCandy();
+                }
                 if (totalSpawned < targetCount) {
-                    setTimeout(step, interval);
+                    setTimeout(dropBatch, interval);
                 }
             };
-            step();
+            dropBatch();
         }
 
         // --------------- ОТРИСОВКА ---------------
@@ -269,7 +387,10 @@
                 const scale = r / radPx;
                 const baseW = img.naturalWidth * scale, baseH = img.naturalHeight * scale;
                 const drawOffX = offX * scale, drawOffY = offY * scale;
-                ctx.drawImage(img, -baseW/2*scaleOverride + drawOffX, -baseH/2*scaleOverride + drawOffY, baseW*scaleOverride, baseH*scaleOverride);
+                ctx.drawImage(img,
+                    -baseW/2*scaleOverride + drawOffX,
+                    -baseH/2*scaleOverride + drawOffY,
+                    baseW*scaleOverride, baseH*scaleOverride);
             } else {
                 const rad = r * scaleOverride;
                 const grad = ctx.createRadialGradient(-rad*0.3, -rad*0.3, rad*0.1, 0, 0, rad);
@@ -313,12 +434,11 @@
             lastTime = timestamp;
             const dtSec = dtMs / 1000;
 
-            // Создание конфет в реальном времени
-            const now = Date.now();
-            if (totalSpawned < TOTAL_CANDIES && now >= nextSpawnDue) {
-                const elapsedSinceStart = now - START_DATE.getTime();
-                const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsedSinceStart / SPAWN_INTERVAL));
-                while (totalSpawned < expectedTotal && totalSpawned < TOTAL_CANDIES) {
+            const nowTs = Date.now();
+            if (totalSpawned < TOTAL_CANDIES && nowTs >= nextSpawnDue) {
+                const elapsed = nowTs - START_DATE.getTime();
+                const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
+                while (totalSpawned < expectedTotal) {
                     spawnCandy();
                 }
                 nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
@@ -344,7 +464,10 @@
                 totalSpawned = 0;
                 const elapsed = Date.now() - START_DATE.getTime();
                 const expected = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
-                fastForwardSpawns(expected);
+                rapidInitialDrop(expected);
+                if (totalSpawned < TOTAL_CANDIES) {
+                    nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
+                }
                 initBgCandies();
             } else {
                 createBoundaries();
@@ -358,6 +481,33 @@
         }
         window.addEventListener('resize', onResize);
 
+        function calcRadius() {
+            const w = canvas.width, h = canvas.height;
+            const minDim = Math.min(w, h);
+            return Math.max(6, Math.min(40, Math.floor(minDim / 24)));
+        }
+
+        function createBoundaries() {
+            if (ground) Matter.World.remove(world, ground);
+            if (leftWall) Matter.World.remove(world, leftWall);
+            if (rightWall) Matter.World.remove(world, rightWall);
+            const w = canvas.width, h = canvas.height;
+            ground = Matter.Bodies.rectangle(w/2, h + 50, w, 100, { isStatic: true, friction: 0.8 });
+            leftWall = Matter.Bodies.rectangle(-50, h/2, 100, h, { isStatic: true });
+            rightWall = Matter.Bodies.rectangle(w + 50, h/2, 100, h, { isStatic: true });
+            Matter.World.add(world, [ground, leftWall, rightWall]);
+        }
+
+        function createMouse() {
+            if (mouseConstraint) Matter.World.remove(world, mouseConstraint);
+            mouse = Matter.Mouse.create(canvas);
+            mouseConstraint = Matter.MouseConstraint.create(engine, {
+                mouse: mouse,
+                constraint: { stiffness: 0.2, render: { visible: false } }
+            });
+            Matter.World.add(world, mouseConstraint);
+        }
+
         async function init() {
             try {
                 canvas.width = window.innerWidth; canvas.height = window.innerHeight;
@@ -366,11 +516,14 @@
                 createBoundaries();
                 createMouse();
                 setupGyro();
+                setupCustomCursor();
+
+                await loadSound('sound1.mp3');
+                setupCollisionEvents();
 
                 const elapsed = Date.now() - START_DATE.getTime();
                 const expectedCount = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
-                // Быстрая подгрузка пропущенных конфет (эффект кучки)
-                fastForwardSpawns(expectedCount);
+                rapidInitialDrop(expectedCount);
 
                 if (totalSpawned < TOTAL_CANDIES) {
                     nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
