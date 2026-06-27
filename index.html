@@ -57,13 +57,12 @@
         const gyroBtn = document.getElementById('gyroButton');
         const cursorImg = document.getElementById('customCursor');
 
-        // ==================== ГЛОБАЛЬНЫЙ ТАЙМЕР НА НЕДЕЛЮ (от сегодня) ====================
+        // ==================== ГЛОБАЛЬНЫЙ ТАЙМЕР НА 1 ДЕНЬ ====================
         const TOTAL_CANDIES = 500;
         const now = new Date();
-        // Начало сегодняшнего дня по UTC – единая точка отсчёта для всех
         const START_DATE = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-        const DURATION_MS = 7 * 24 * 60 * 60 * 1000; // ровно 7 дней
-        const SPAWN_INTERVAL = DURATION_MS / TOTAL_CANDIES; // ~1209.6 сек
+        const DURATION_MS = 24 * 60 * 60 * 1000; // ровно 1 день
+        const SPAWN_INTERVAL = DURATION_MS / TOTAL_CANDIES;
 
         const CANDY_IMAGE_URLS = [
             'candy1.png', 'candy2.png', 'candy3.png',
@@ -100,6 +99,147 @@
 
         let ground, leftWall, rightWall;
         let mouse, mouseConstraint;
+
+        // ---- ФОН И ПАРАЛЛАКС (день/ночь) ----
+        let isNight = false;
+        let dayBgImage = null;
+        let nightBgImage = null;
+        let starImages = [];
+        let stars = [];
+        let bgSwitchInterval = null;
+        let blurredNightBg = null;
+        let blurredDayBg = null;
+
+        function updateDayNight() {
+            const hour = new Date().getHours();
+            const newNight = (hour >= 22 || hour < 6);
+            if (newNight !== isNight) {
+                isNight = newNight;
+                blurredNightBg = null;
+                blurredDayBg = null;
+                loadBackgroundResources();
+            }
+        }
+
+        function createBlurredBackground(sourceImage, blurPx) {
+            const off = document.createElement('canvas');
+            off.width = canvas.width;
+            off.height = canvas.height;
+            const offCtx = off.getContext('2d');
+            offCtx.filter = `blur(${blurPx}px)`;
+            offCtx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
+            offCtx.filter = 'none';
+            return off;
+        }
+
+        async function loadBackgroundResources() {
+            if (isNight) {
+                if (!nightBgImage) {
+                    nightBgImage = new Image();
+                    nightBgImage.src = 'fon1.jpg';
+                    await new Promise((resolve) => {
+                        nightBgImage.onload = resolve;
+                        nightBgImage.onerror = () => { nightBgImage = null; resolve(); };
+                    });
+                }
+                if (starImages.length === 0) {
+                    const starUrls = [];
+                    for (let i = 1; i <= 12; i++) starUrls.push(`star${i}.png`);
+                    starImages = await Promise.all(starUrls.map(url => {
+                        return new Promise(resolve => {
+                            const img = new Image();
+                            img.src = url;
+                            img.onload = () => resolve(img);
+                            img.onerror = () => resolve(null);
+                        });
+                    })).then(imgs => imgs.filter(img => img !== null));
+                }
+                if (stars.length === 0) {
+                    for (let i = 0; i < 30; i++) stars.push(createStar());
+                }
+                if (nightBgImage && !blurredNightBg) {
+                    blurredNightBg = createBlurredBackground(nightBgImage, 6);
+                }
+            } else {
+                const dayIndex = 2 + Math.floor(Math.random() * 27);
+                dayBgImage = new Image();
+                dayBgImage.src = `fon${dayIndex}.jpg`;
+                await new Promise((resolve) => {
+                    dayBgImage.onload = resolve;
+                    dayBgImage.onerror = () => { dayBgImage = null; resolve(); };
+                });
+                stars = [];
+                starImages = [];
+                if (dayBgImage && !blurredDayBg) {
+                    blurredDayBg = createBlurredBackground(dayBgImage, 4);
+                }
+            }
+        }
+
+        function createStar() {
+            const img = starImages.length ? starImages[Math.floor(Math.random() * starImages.length)] : null;
+            return {
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                vy: 3 + Math.random() * 6,
+                size: (0.4 + Math.random() * 0.6) * RADIUS,
+                rotation: Math.random() * Math.PI * 2,
+                rotationSpeed: (Math.random() - 0.5) * 0.02,
+                image: img,
+                alpha: 0.6 + Math.random() * 0.4
+            };
+        }
+
+        function updateStars(dtSec) {
+            for (const star of stars) {
+                star.y += star.vy * dtSec;
+                star.rotation += star.rotationSpeed * dtSec;
+                if (star.y - star.size > canvas.height) {
+                    star.y = -star.size - Math.random() * 50;
+                    star.x = Math.random() * canvas.width;
+                    star.image = starImages.length ? starImages[Math.floor(Math.random() * starImages.length)] : null;
+                }
+            }
+        }
+
+        function drawBackground(ctx) {
+            if (isNight && blurredNightBg) {
+                ctx.drawImage(blurredNightBg, 0, 0);
+            } else if (!isNight && blurredDayBg) {
+                ctx.drawImage(blurredDayBg, 0, 0);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            } else {
+                const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                bgGrad.addColorStop(0, '#fef5f9');
+                bgGrad.addColorStop(0.7, '#f0f6ff');
+                bgGrad.addColorStop(1, '#e6f3e8');
+                ctx.fillStyle = bgGrad;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            if (isNight && stars.length > 0) {
+                ctx.save();
+                ctx.filter = 'blur(2px)';
+                for (const star of stars) {
+                    ctx.save();
+                    ctx.translate(star.x, star.y);
+                    ctx.rotate(star.rotation);
+                    ctx.globalAlpha = star.alpha;
+                    if (star.image) {
+                        const s = star.size * 2;
+                        ctx.drawImage(star.image, -s/2, -s/2, s, s);
+                    } else {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, star.size, 0, Math.PI*2);
+                        ctx.fillStyle = '#fff';
+                        ctx.fill();
+                    }
+                    ctx.restore();
+                }
+                ctx.restore();
+            }
+        }
 
         // ---- Кастомный курсор ----
         const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
@@ -300,25 +440,6 @@
             return (await Promise.all(proms)).filter(i => i);
         }
 
-        // --------------- ФОН ---------------
-        const BG_CANDIES_COUNT = 20;
-        let bgCandies = [];
-        function createBgCandy(yPos) {
-            const r = RADIUS * 1.2;
-            return {
-                x: Math.random() * canvas.width,
-                y: yPos ?? (Math.random() * (canvas.height + 2*r) - r),
-                vy: 6 + Math.random() * 12,
-                radius: r,
-                image: loadedImages.length ? loadedImages[Math.floor(Math.random() * loadedImages.length)].img : null,
-                color: `hsl(${Math.random()*360},65%,80%)`
-            };
-        }
-        function initBgCandies() {
-            bgCandies = [];
-            for (let i = 0; i < BG_CANDIES_COUNT; i++) bgCandies.push(createBgCandy());
-        }
-
         // --------------- КОНФЕТЫ ---------------
         function spawnCandy() {
             const r = RADIUS;
@@ -413,17 +534,7 @@
         }
 
         function drawScene() {
-            ctx.clearRect(0,0,canvas.width,canvas.height);
-            const bgGrad=ctx.createLinearGradient(0,0,0,canvas.height);
-            bgGrad.addColorStop(0,'#fef5f9'); bgGrad.addColorStop(0.7,'#f0f6ff'); bgGrad.addColorStop(1,'#e6f3e8');
-            ctx.fillStyle=bgGrad; ctx.fillRect(0,0,canvas.width,canvas.height);
-
-            for (const bg of bgCandies) {
-                ctx.save(); ctx.translate(bg.x,bg.y); ctx.globalAlpha=0.25;
-                if (bg.image) { const s=bg.radius*2.4; ctx.drawImage(bg.image,-s/2,-s/2,s,s); }
-                else { ctx.beginPath(); ctx.arc(0,0,bg.radius,0,Math.PI*2); ctx.fillStyle=bg.color; ctx.fill(); }
-                ctx.restore();
-            }
+            drawBackground(ctx);
             const sorted = [...candies].sort((a,b) => a.position.y - b.position.y);
             for (const b of sorted) drawCandy(ctx, b, 1);
         }
@@ -433,6 +544,8 @@
             const dtMs = Math.min(50, timestamp - (lastTime || timestamp));
             lastTime = timestamp;
             const dtSec = dtMs / 1000;
+
+            if (isNight) updateStars(dtSec);
 
             const nowTs = Date.now();
             if (totalSpawned < TOTAL_CANDIES && nowTs >= nextSpawnDue) {
@@ -445,10 +558,6 @@
             }
 
             Matter.Engine.update(engine, dtMs);
-            for (const bg of bgCandies) {
-                bg.y += bg.vy * dtSec;
-                if (bg.y - bg.radius > canvas.height) { bg.y = -bg.radius - Math.random()*50; bg.x = Math.random()*canvas.width; }
-            }
             drawScene();
             animationId = requestAnimationFrame(gameLoop);
         }
@@ -456,6 +565,14 @@
         function onResize() {
             canvas.width = window.innerWidth; canvas.height = window.innerHeight;
             const newR = calcRadius();
+            blurredNightBg = null;
+            blurredDayBg = null;
+            if (isNight && nightBgImage) {
+                blurredNightBg = createBlurredBackground(nightBgImage, 6);
+            } else if (!isNight && dayBgImage) {
+                blurredDayBg = createBlurredBackground(dayBgImage, 4);
+            }
+
             if (newR !== RADIUS) {
                 RADIUS = newR;
                 createBoundaries();
@@ -468,14 +585,17 @@
                 if (totalSpawned < TOTAL_CANDIES) {
                     nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
                 }
-                initBgCandies();
             } else {
                 createBoundaries();
                 for (const b of candies) Matter.Body.setPosition(b, {
                     x: Math.min(Math.max(b.position.x, RADIUS), canvas.width - RADIUS),
                     y: Math.min(Math.max(b.position.y, RADIUS), canvas.height - RADIUS)
                 });
-                initBgCandies();
+            }
+
+            if (isNight) {
+                stars = [];
+                for (let i = 0; i < 30; i++) stars.push(createStar());
             }
             createMouse();
         }
@@ -521,6 +641,9 @@
                 await loadSound('sound1.mp3');
                 setupCollisionEvents();
 
+                updateDayNight();
+                await loadBackgroundResources();
+
                 const elapsed = Date.now() - START_DATE.getTime();
                 const expectedCount = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
                 rapidInitialDrop(expectedCount);
@@ -529,15 +652,20 @@
                     nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
                 }
 
-                initBgCandies();
                 lastTime = 0;
                 if (animationId) cancelAnimationFrame(animationId);
                 animationId = requestAnimationFrame(gameLoop);
+
+                bgSwitchInterval = setInterval(() => {
+                    const prevNight = isNight;
+                    updateDayNight();
+                    if (isNight !== prevNight) loadBackgroundResources();
+                }, 60000);
+
             } catch (e) {
                 console.error('Ошибка инициализации:', e);
                 RADIUS = calcRadius() || 12;
                 createBoundaries();
-                initBgCandies();
                 lastTime = 0;
                 animationId = requestAnimationFrame(gameLoop);
             }
