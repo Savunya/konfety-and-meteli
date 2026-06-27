@@ -8,7 +8,7 @@
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
             width:100vw; height:100vh; overflow:hidden;
-            background:#fef9f4; font-family: 'Segoe UI', system-ui, sans-serif;
+            background:#0a0a1a; font-family: 'Segoe UI', system-ui, sans-serif;
         }
         canvas { 
             display:block; position:fixed; top:0; left:0; width:100%; height:100%; 
@@ -61,7 +61,7 @@
         const TOTAL_CANDIES = 500;
         const now = new Date();
         const START_DATE = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-        const DURATION_MS = 24 * 60 * 60 * 1000; // ровно 1 день
+        const DURATION_MS = 24 * 60 * 60 * 1000; // 1 день
         const SPAWN_INTERVAL = DURATION_MS / TOTAL_CANDIES;
 
         const CANDY_IMAGE_URLS = [
@@ -78,7 +78,7 @@
         ];
 
         let RADIUS = 12;
-        let loadedImages = [];
+        let loadedImages = [];            // { img, radiusInPixels, offsetX, offsetY, scale }
         let candies = [];
         let totalSpawned = 0;
         let nextSpawnDue = 0;
@@ -100,26 +100,11 @@
         let ground, leftWall, rightWall;
         let mouse, mouseConstraint;
 
-        // ---- ФОН И ПАРАЛЛАКС (день/ночь) ----
-        let isNight = false;
-        let dayBgImage = null;
+        // ---- НОЧНОЙ ФОН (всегда) ----
         let nightBgImage = null;
         let starImages = [];
         let stars = [];
-        let bgSwitchInterval = null;
         let blurredNightBg = null;
-        let blurredDayBg = null;
-
-        function updateDayNight() {
-            const hour = new Date().getHours();
-            const newNight = (hour >= 22 || hour < 6);
-            if (newNight !== isNight) {
-                isNight = newNight;
-                blurredNightBg = null;
-                blurredDayBg = null;
-                loadBackgroundResources();
-            }
-        }
 
         function createBlurredBackground(sourceImage, blurPx) {
             const off = document.createElement('canvas');
@@ -132,47 +117,32 @@
             return off;
         }
 
-        async function loadBackgroundResources() {
-            if (isNight) {
-                if (!nightBgImage) {
-                    nightBgImage = new Image();
-                    nightBgImage.src = 'fon1.jpg';
-                    await new Promise((resolve) => {
-                        nightBgImage.onload = resolve;
-                        nightBgImage.onerror = () => { nightBgImage = null; resolve(); };
-                    });
-                }
-                if (starImages.length === 0) {
-                    const starUrls = [];
-                    for (let i = 1; i <= 12; i++) starUrls.push(`star${i}.png`);
-                    starImages = await Promise.all(starUrls.map(url => {
-                        return new Promise(resolve => {
-                            const img = new Image();
-                            img.src = url;
-                            img.onload = () => resolve(img);
-                            img.onerror = () => resolve(null);
-                        });
-                    })).then(imgs => imgs.filter(img => img !== null));
-                }
-                if (stars.length === 0) {
-                    for (let i = 0; i < 30; i++) stars.push(createStar());
-                }
-                if (nightBgImage && !blurredNightBg) {
-                    blurredNightBg = createBlurredBackground(nightBgImage, 6);
-                }
-            } else {
-                const dayIndex = 2 + Math.floor(Math.random() * 27);
-                dayBgImage = new Image();
-                dayBgImage.src = `fon${dayIndex}.jpg`;
+        async function loadNightBackground() {
+            if (!nightBgImage) {
+                nightBgImage = new Image();
+                nightBgImage.src = 'fon1.jpg';
                 await new Promise((resolve) => {
-                    dayBgImage.onload = resolve;
-                    dayBgImage.onerror = () => { dayBgImage = null; resolve(); };
+                    nightBgImage.onload = resolve;
+                    nightBgImage.onerror = () => { nightBgImage = null; resolve(); };
                 });
-                stars = [];
-                starImages = [];
-                if (dayBgImage && !blurredDayBg) {
-                    blurredDayBg = createBlurredBackground(dayBgImage, 4);
-                }
+            }
+            if (starImages.length === 0) {
+                const starUrls = [];
+                for (let i = 1; i <= 12; i++) starUrls.push(`star${i}.png`);
+                starImages = await Promise.all(starUrls.map(url => {
+                    return new Promise(resolve => {
+                        const img = new Image();
+                        img.src = url;
+                        img.onload = () => resolve(img);
+                        img.onerror = () => resolve(null);
+                    });
+                })).then(imgs => imgs.filter(img => img !== null));
+            }
+            if (stars.length === 0) {
+                for (let i = 0; i < 30; i++) stars.push(createStar());
+            }
+            if (nightBgImage && !blurredNightBg) {
+                blurredNightBg = createBlurredBackground(nightBgImage, 6);
             }
         }
 
@@ -203,22 +173,17 @@
         }
 
         function drawBackground(ctx) {
-            if (isNight && blurredNightBg) {
+            if (blurredNightBg) {
                 ctx.drawImage(blurredNightBg, 0, 0);
-            } else if (!isNight && blurredDayBg) {
-                ctx.drawImage(blurredDayBg, 0, 0);
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
             } else {
                 const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-                bgGrad.addColorStop(0, '#fef5f9');
-                bgGrad.addColorStop(0.7, '#f0f6ff');
-                bgGrad.addColorStop(1, '#e6f3e8');
+                bgGrad.addColorStop(0, '#0a0a1a');
+                bgGrad.addColorStop(1, '#1a1a3a');
                 ctx.fillStyle = bgGrad;
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
             }
 
-            if (isNight && stars.length > 0) {
+            if (stars.length > 0) {
                 ctx.save();
                 ctx.filter = 'blur(2px)';
                 for (const star of stars) {
@@ -238,6 +203,145 @@
                     ctx.restore();
                 }
                 ctx.restore();
+            }
+        }
+
+        // ---- СКРИНСЕЙВЕР (DVD-сущность) ----
+        const IDLE_TIMEOUT = 300000; // 5 минут
+        let lastActivity = Date.now();
+        let screensaverActive = false;
+        let screensaverType = 'candy'; // 'candy' или 'star'
+
+        // Единый объект для скринсейвера
+        let screensaverEntity = {
+            x: 0, y: 0,
+            vx: 350, vy: 350,
+            image: null,
+            radius: RADIUS * 2.2,
+            scaleOverride: 1.0,
+            radiusInPixels: RADIUS,
+            offsetX: 0, offsetY: 0,
+            type: 'candy'
+        };
+
+        function initScreensaverEntity(type) {
+            const entity = screensaverEntity;
+            entity.type = type;
+            entity.x = canvas.width / 2;
+            entity.y = canvas.height / 2;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 350;
+            entity.vx = Math.cos(angle) * speed;
+            entity.vy = Math.sin(angle) * speed;
+            if (type === 'candy') {
+                entity.radius = RADIUS * 2.2;
+                pickRandomCandyImage();
+            } else {
+                entity.radius = RADIUS * 2.5; // звезда ещё крупнее
+                pickRandomStarImage();
+            }
+        }
+
+        function pickRandomCandyImage() {
+            if (loadedImages.length > 0) {
+                const src = loadedImages[Math.floor(Math.random() * loadedImages.length)];
+                screensaverEntity.image = src.img;
+                screensaverEntity.scaleOverride = src.scale || 1.0;
+                screensaverEntity.radiusInPixels = src.radiusInPixels || RADIUS;
+                screensaverEntity.offsetX = src.offsetX || 0;
+                screensaverEntity.offsetY = src.offsetY || 0;
+            }
+        }
+
+        function pickRandomStarImage() {
+            if (starImages.length > 0) {
+                const img = starImages[Math.floor(Math.random() * starImages.length)];
+                screensaverEntity.image = img;
+                screensaverEntity.scaleOverride = 1.0;
+                screensaverEntity.radiusInPixels = RADIUS;
+                screensaverEntity.offsetX = 0;
+                screensaverEntity.offsetY = 0;
+            }
+        }
+
+        function updateScreensaverEntity(dtSec) {
+            const e = screensaverEntity;
+            e.x += e.vx * dtSec;
+            e.y += e.vy * dtSec;
+
+            const r = e.radius;
+            let bounced = false;
+
+            if (e.x - r < 0) {
+                e.x = r;
+                e.vx = Math.abs(e.vx);
+                bounced = true;
+            } else if (e.x + r > canvas.width) {
+                e.x = canvas.width - r;
+                e.vx = -Math.abs(e.vx);
+                bounced = true;
+            }
+            if (e.y - r < 0) {
+                e.y = r;
+                e.vy = Math.abs(e.vy);
+                bounced = true;
+            } else if (e.y + r > canvas.height) {
+                e.y = canvas.height - r;
+                e.vy = -Math.abs(e.vy);
+                bounced = true;
+            }
+
+            if (bounced) {
+                if (e.type === 'candy') {
+                    pickRandomCandyImage();
+                } else {
+                    pickRandomStarImage();
+                }
+            }
+        }
+
+        function drawScreensaverEntity(ctx) {
+            const e = screensaverEntity;
+            const img = e.image;
+            if (!img) return;
+            ctx.save();
+            ctx.translate(e.x, e.y);
+            if (e.type === 'star') {
+                // Без размытия, только свечение
+                ctx.globalAlpha = 1;
+                ctx.shadowColor = 'rgba(255, 255, 200, 0.9)';
+                ctx.shadowBlur = 15;
+            } else {
+                ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                ctx.shadowBlur = 10;
+            }
+            const r = e.radius;
+            const scale = r / (e.radiusInPixels || r);
+            const baseW = img.naturalWidth * scale;
+            const baseH = img.naturalHeight * scale;
+            const drawOffX = (e.offsetX || 0) * scale;
+            const drawOffY = (e.offsetY || 0) * scale;
+            const finalW = baseW * e.scaleOverride;
+            const finalH = baseH * e.scaleOverride;
+            ctx.drawImage(img, -finalW/2 + drawOffX, -finalH/2 + drawOffY, finalW, finalH);
+            ctx.restore();
+        }
+
+        function activateScreensaver() {
+            screensaverActive = true;
+            if (Math.random() < 0.05) {
+                screensaverType = 'star';
+            } else {
+                screensaverType = 'candy';
+            }
+            initScreensaverEntity(screensaverType);
+        }
+
+        function resetActivity() {
+            lastActivity = Date.now();
+            if (screensaverActive) {
+                screensaverActive = false;
+                // возвращаем обычный режим
             }
         }
 
@@ -272,11 +376,13 @@
             if (bodiesUnder.length > 0) {
                 cursorImg.src = 'hand2.png';
             }
+            resetActivity();
         }
 
         function onMouseUp(e) {
             if (!customCursorEnabled) return;
             cursorImg.src = 'hand1.png';
+            resetActivity();
         }
 
         function setupCustomCursor() {
@@ -285,9 +391,20 @@
                 return;
             }
             enableCustomCursor();
-            document.addEventListener('mousemove', updateCursorPosition);
+            document.addEventListener('mousemove', (e) => {
+                updateCursorPosition(e);
+                resetActivity();
+            });
             document.addEventListener('mousedown', onMouseDown);
             document.addEventListener('mouseup', onMouseUp);
+            document.addEventListener('keydown', resetActivity);
+
+            document.addEventListener('mouseleave', () => {
+                if (customCursorEnabled) cursorImg.style.display = 'none';
+            });
+            document.addEventListener('mouseenter', () => {
+                if (customCursorEnabled) cursorImg.style.display = 'block';
+            });
         }
 
         // --------------- ЗВУК ---------------
@@ -500,9 +617,9 @@
             ctx.translate(x, y);
             ctx.rotate(angle);
             ctx.globalAlpha = alpha;
-            ctx.shadowColor = 'rgba(0,0,0,0.08)';
-            ctx.shadowBlur = 3;
-            ctx.shadowOffsetY = 1;
+            ctx.shadowColor = 'rgba(0,0,0,0.2)';
+            ctx.shadowBlur = 4;
+            ctx.shadowOffsetY = 2;
 
             if (img?.complete && img.naturalWidth > 0) {
                 const scale = r / radPx;
@@ -534,9 +651,15 @@
         }
 
         function drawScene() {
-            drawBackground(ctx);
-            const sorted = [...candies].sort((a,b) => a.position.y - b.position.y);
-            for (const b of sorted) drawCandy(ctx, b, 1);
+            if (screensaverActive) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                drawScreensaverEntity(ctx);
+            } else {
+                drawBackground(ctx);
+                const sorted = [...candies].sort((a,b) => a.position.y - b.position.y);
+                for (const b of sorted) drawCandy(ctx, b, 1);
+            }
         }
 
         function gameLoop(timestamp) {
@@ -545,19 +668,28 @@
             lastTime = timestamp;
             const dtSec = dtMs / 1000;
 
-            if (isNight) updateStars(dtSec);
-
-            const nowTs = Date.now();
-            if (totalSpawned < TOTAL_CANDIES && nowTs >= nextSpawnDue) {
-                const elapsed = nowTs - START_DATE.getTime();
-                const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
-                while (totalSpawned < expectedTotal) {
-                    spawnCandy();
-                }
-                nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
+            if (!screensaverActive && Date.now() - lastActivity > IDLE_TIMEOUT) {
+                activateScreensaver();
             }
 
-            Matter.Engine.update(engine, dtMs);
+            if (screensaverActive) {
+                updateScreensaverEntity(dtSec);
+            } else {
+                updateStars(dtSec);
+
+                const nowTs = Date.now();
+                if (totalSpawned < TOTAL_CANDIES && nowTs >= nextSpawnDue) {
+                    const elapsed = nowTs - START_DATE.getTime();
+                    const expectedTotal = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
+                    while (totalSpawned < expectedTotal) {
+                        spawnCandy();
+                    }
+                    nextSpawnDue = START_DATE.getTime() + (totalSpawned + 1) * SPAWN_INTERVAL;
+                }
+
+                Matter.Engine.update(engine, dtMs);
+            }
+
             drawScene();
             animationId = requestAnimationFrame(gameLoop);
         }
@@ -565,12 +697,8 @@
         function onResize() {
             canvas.width = window.innerWidth; canvas.height = window.innerHeight;
             const newR = calcRadius();
-            blurredNightBg = null;
-            blurredDayBg = null;
-            if (isNight && nightBgImage) {
+            if (nightBgImage) {
                 blurredNightBg = createBlurredBackground(nightBgImage, 6);
-            } else if (!isNight && dayBgImage) {
-                blurredDayBg = createBlurredBackground(dayBgImage, 4);
             }
 
             if (newR !== RADIUS) {
@@ -593,10 +721,8 @@
                 });
             }
 
-            if (isNight) {
-                stars = [];
-                for (let i = 0; i < 30; i++) stars.push(createStar());
-            }
+            stars = [];
+            for (let i = 0; i < 30; i++) stars.push(createStar());
             createMouse();
         }
         window.addEventListener('resize', onResize);
@@ -628,6 +754,12 @@
             Matter.World.add(world, mouseConstraint);
         }
 
+        window.addEventListener('mousemove', resetActivity);
+        window.addEventListener('mousedown', resetActivity);
+        window.addEventListener('touchstart', resetActivity, { passive: true });
+        window.addEventListener('touchmove', resetActivity, { passive: true });
+        window.addEventListener('keydown', resetActivity);
+
         async function init() {
             try {
                 canvas.width = window.innerWidth; canvas.height = window.innerHeight;
@@ -641,8 +773,7 @@
                 await loadSound('sound1.mp3');
                 setupCollisionEvents();
 
-                updateDayNight();
-                await loadBackgroundResources();
+                await loadNightBackground();
 
                 const elapsed = Date.now() - START_DATE.getTime();
                 const expectedCount = Math.min(TOTAL_CANDIES, Math.floor(elapsed / SPAWN_INTERVAL));
@@ -653,14 +784,9 @@
                 }
 
                 lastTime = 0;
+                lastActivity = Date.now();
                 if (animationId) cancelAnimationFrame(animationId);
                 animationId = requestAnimationFrame(gameLoop);
-
-                bgSwitchInterval = setInterval(() => {
-                    const prevNight = isNight;
-                    updateDayNight();
-                    if (isNight !== prevNight) loadBackgroundResources();
-                }, 60000);
 
             } catch (e) {
                 console.error('Ошибка инициализации:', e);
